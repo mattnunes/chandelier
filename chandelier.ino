@@ -29,10 +29,12 @@ struct mode {
 // - - - - - - - - - - - - - - - - - - - -
 bool inputs_equals(const struct inputs *, const struct inputs *);
 
+void inline no_op(const struct inputs *);
 void solid_color_change(const struct inputs *);
 
-void sparkle_start(const struct inputs *);
+void shared_sparkle_start(const struct inputs *);
 void sparkle_tick(const struct inputs *);
+void rainbow_sparkle_tick(const struct inputs *);
 
 void rainbow_tick(const struct inputs *);
 
@@ -45,25 +47,33 @@ static struct inputs last_inputs;
 
 static struct mode modes[] = {
   {
-    .start  = NULL,
-    .change = NULL,
-    .tick   = rainbow_tick
-  },
-  {
-    .start  = NULL,
+    .start  = solid_color_change,
     .change = solid_color_change,
-    .tick   = NULL
+    .tick   = no_op
   },
   {
-    .start  = sparkle_start,
-    .change = NULL,
+    .start  = shared_sparkle_start,
+    .change = no_op,
     .tick   = sparkle_tick
+  },
+  {
+    .start  = shared_sparkle_start,
+    .change = no_op,
+    .tick   = rainbow_sparkle_tick
+  },
+  {
+    .start  = no_op,
+    .change = no_op,
+    .tick   = rainbow_tick
   }
 };
 static size_t mode_index = 0;
 static size_t mode_count = sizeof(modes) / sizeof(struct mode);
 
+// pointer to the current mode
 #define current_mode (&(modes[mode_index]))
+
+#define map_to_uint8(x) (uint8_t)(map((x), 0, 1023, 0, UINT8_MAX))
 
 // - Setup
 // - - - - - - - - - - - - - - - - - - - -
@@ -85,30 +95,22 @@ void setup() {
 void loop() {
   const struct inputs new_inputs = (struct inputs) {
     .button = (uint8_t)digitalRead(PUSH_BUTTON_PIN),
-    .red = (uint8_t)(analogRead(RED_DIAL_PIN) / 4),
-    .green = (uint8_t)(analogRead(GREEN_DIAL_PIN) / 4),
-    .blue = (uint8_t)(analogRead(BLUE_DIAL_PIN) / 4)
+    .red = map_to_uint8(analogRead(RED_DIAL_PIN)),
+    .green = map_to_uint8(analogRead(GREEN_DIAL_PIN)),
+    .blue = map_to_uint8(analogRead(BLUE_DIAL_PIN))
   };
 
   if (!inputs_equals(&last_inputs, &new_inputs)) {
     if (last_inputs.button != new_inputs.button && new_inputs.button == HIGH) {
       mode_index = successor(mode_index, mode_count);
-      if (current_mode->start) {
-        current_mode->start(&new_inputs);
-      }
+      current_mode->start(&new_inputs);
     } else {
-      if (current_mode->change) {
-        current_mode->change(&new_inputs);
-      }
+      current_mode->change(&new_inputs);
     }
   }
 
-  if (current_mode->tick) {
-    current_mode->tick(&new_inputs);
-  }
-
+  current_mode->tick(&new_inputs);
   last_inputs = new_inputs;
-  led_strip.show();
 }
 
 // - - - - - - - - - - - - - - - - - - - -
@@ -128,6 +130,10 @@ size_t successor(const size_t start, const size_t maximum) {
   }
 }
 
+// - No-Op Function
+// - - - - - - - - - - - - - - - - - - - -
+void inline no_op(__attribute__((unused)) const struct inputs *_unused) {};
+
 // - Solid Color Mode
 // - - - - - - - - - - - - - - - - - - - -
 void solid_color_change(const struct inputs *inputs) {
@@ -137,22 +143,23 @@ void solid_color_change(const struct inputs *inputs) {
   led_strip.show();
 }
 
-// - Sparkle Mode
+// - Sparkle Mode Shared
 // - - - - - - - - - - - - - - - - - - - -
-void sparkle_start(__attribute__((unused)) const struct inputs *inputs) {
+void shared_sparkle_start(__attribute__((unused)) const struct inputs *inputs) {
   for (size_t idx = 0; idx < LED_COUNT; ++idx) {
     led_strip.setPixelColor(idx, 0, 0, 0);
   }
   led_strip.show();
 }
 
+// - Sparkle Mode
 // - - - - - - - - - - - - - - - - - - - -
 void sparkle_tick(__attribute__((unused))  const struct inputs *inputs) {
   static unsigned long next_schedule = 0;
   static const size_t index_count = 7;
   const unsigned long now = millis();
   
-  if (now > next_schedule) {
+  if (now >= next_schedule) {
     for (size_t idx = 0; idx < index_count; ++idx) {
       led_strip.setPixelColor(random(LED_COUNT), 255, 255, 255);
     }
@@ -167,10 +174,59 @@ void sparkle_tick(__attribute__((unused))  const struct inputs *inputs) {
   }
 }
 
+// - Rainbow Sparkle Mode
+// - - - - - - - - - - - - - - - - - - - -
+void rainbow_sparkle_tick(__attribute__((unused))  const struct inputs *inputs) {
+  static unsigned long next_schedule = 0;
+  static const size_t index_count = 7;
+  const unsigned long now = millis();
+  
+  if (now >= next_schedule) {
+    for (size_t idx = 0; idx < index_count; ++idx) {
+      led_strip.setPixelColor(random(LED_COUNT), random(2) ? 255 : 0, random(2) ? 255 : 0, random(2) ? 255 : 0);
+    }
+    led_strip.show();
+    next_schedule = now + 25;
+  } else {
+    for (size_t idx = 0; idx < LED_COUNT; ++idx) {
+      led_strip.setPixelColor(idx, 0, 0, 0);
+    }
+    led_strip.show();
+    next_schedule = 0;
+  }
+}
+
 // - Rainbow Mode
 // - - - - - - - - - - - - - - - - - - - -
-void rainbow_tick(const struct inputs *inputs) {
+static uint32_t rainbow_wheel(uint8_t wheel_pos) {
+  if (wheel_pos < 85) {
+    return Adafruit_NeoPixel::Color(wheel_pos * 3, 255 - wheel_pos * 3, 0);
+  } else if(wheel_pos < 170) {
+    wheel_pos -= 85;
+    return Adafruit_NeoPixel::Color(255 - wheel_pos * 3, 0, wheel_pos * 3);
+  } else {
+    wheel_pos -= 170;
+    return Adafruit_NeoPixel::Color(0, wheel_pos * 3, 255 - wheel_pos * 3);
+  }
+}
 
+// - - - - - - - - - - - - - - - - - - - -
+void rainbow_tick(const struct inputs *inputs) {
+  static unsigned long next_schedule = 0;
+  const unsigned long now = millis();
+  static uint8_t color_step = 0;
+
+  if (now >= next_schedule) {
+    for (size_t idx = 0; idx < LED_COUNT; ++idx) {
+      const uint32_t color = rainbow_wheel(((idx * UINT8_MAX) / LED_COUNT) + color_step);
+      led_strip.setPixelColor(idx, color);
+    }
+
+    // schedule next update based on red dial
+    next_schedule = now + map(inputs->red, 0, UINT8_MAX, 0, 45);
+    led_strip.show();
+    color_step++; // rolls over to zero after 255
+  }
 }
 
 
